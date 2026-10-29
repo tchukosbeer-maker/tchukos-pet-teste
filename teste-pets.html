@@ -1,0 +1,85 @@
+import express from 'express';
+import multer from 'multer';
+import rateLimit from 'express-rate-limit';
+import crypto from 'node:crypto';
+
+const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+const siteId = process.env.WIX_SITE_ID || 'a2f706a7-c039-45cf-8d51-26176f76444c';
+const apiKey = process.env.WIX_API_KEY;
+const allowedOrigin = process.env.ALLOWED_ORIGIN;
+if (!apiKey || !allowedOrigin) throw new Error('Configure WIX_API_KEY e ALLOWED_ORIGIN no servidor.');
+const allowed = new Set(['image/jpeg','image/png','image/webp']);
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3*1024*1024, files: 1, fields: 12 }, fileFilter(req,file,cb) { cb(null, allowed.has(file.mimetype)); } });
+app.use((req,res,next) => {
+  res.setHeader('Vary','Origin');
+  if (req.get('origin') === allowedOrigin) res.setHeader('Access-Control-Allow-Origin',allowedOrigin);
+  res.setHeader('Access-Control-Allow-Methods','GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers','Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(req.get('origin') === allowedOrigin ? 204 : 403);
+  next();
+});
+const limiter = rateLimit({windowMs:15*60*1000,limit:5,standardHeaders:'draft-7',legacyHeaders:false,message:{success:false,message:'Muitas tentativas. Aguarde alguns minutos.'}});
+function imageValid(buffer,mime) {
+  if (!buffer || buffer.length < 16) return false;
+  if (mime==='image/jpeg') return buffer[0]===0xff && buffer[1]===0xd8 && buffer[2]===0xff;
+  if (mime==='image/png') return buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
+  if (mime==='image/webp') return buffer.toString('ascii',0,4)==='RIFF' && buffer.toString('ascii',8,12)==='WEBP';
+  return false;
+}
+async function wixJson(path, method, body) {
+  const r = await fetch('https://www.wixapis.com'+path,{method,headers:{Authorization:apiKey,'wix-site-id':siteId,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(`Wix HTTP ${r.status}: ${JSON.stringify(j).slice(0,250)}`);
+  return j;
+}
+app.get('/health',(req,res)=>res.json({ok:true}));
+app.get('/api/pets/aprovados', async (req,res) => {
+  try {
+    if (req.get('origin') !== allowedOrigin) {
+      return res.status(403).json({success:false,message:'Origem não autorizada.'});
+    }
+    const result = await wixJson('/data/v2/items/query','POST',{
+      dataCollectionId:'PetsInscritos',
+      query:{
+        filter:{status:{$eq:'Aprovado'}},
+        paging:{limit:100}
+      }
+    });
+    const pets = (result.dataItems || []).map(item => ({
+      id:item.id,
+      nomePet:item.data?.nomePet || '',
+      especie:item.data?.especie || '',
+      fotoPet:item.data?.fotoPet || ''
+    })).filter(pet => pet.nomePet && pet.fotoPet);
+    return res.json({success:true,pets});
+  } catch (error) {
+    console.error('Falha ao consultar pets aprovados:',error);
+    return res.status(502).json({success:false,message:'Não foi possível carregar os pets aprovados.'});
+  }
+});
+
+app.post('/api/pets/inscrever',limiter,upload.single('fotoPet'),async(req,res)=>{
+  try {
+    if (req.get('origin') !== allowedOrigin) return res.status(403).json({success:false,message:'Origem não autorizada.'});
+    const tutor=String(req.body.tutor||'').trim(), telefone=String(req.body.telefone||'').trim();
+    const pet=String(req.body.pet||'').trim(), especie=String(req.body.especie||'').trim();
+    if (!tutor || tutor.length>100 || !pet || pet.length>80 || !/^\+?[0-9 ()-]{10,25}$/.test(telefone) || !['Cachorro','Gato','Outro'].includes(especie)) return res.status(400).json({success:false,message:'Dados inválidos.'});
+    if (req.body.autorizacaoFoto !== 'true' || req.body.aceiteRegras !== 'true') return res.status(400).json({success:false,message:'Autorizações obrigatórias.'});
+    if (!req.file || !imageValid(req.file.buffer,req.file.mimetype)) return res.status(400).json({success:false,message:'Foto inválida.'});
+    const ext={'image/jpeg':'jpg','image/png':'png','image/webp':'webp'}[req.file.mimetype];
+    const filename=`pet-${crypto.randomUUID()}.${ext}`;
+    const generated=await wixJson('/site-media/v1/files/generate-upload-url','POST',{mimeType:req.file.mimetype,fileName:filename,sizeInBytes:String(req.file.size),private:false});
+    if (!generated.uploadUrl) throw new Error('Wix não retornou URL de upload.');
+    const uploadResponse=await fetch(generated.uploadUrl,{method:'PUT',headers:{'Content-Type':req.file.mimetype},body:req.file.buffer});
+    const uploaded=await uploadResponse.json().catch(()=>({}));
+    if (!uploadResponse.ok || !uploaded.file?.url) throw new Error('Falha no upload da imagem ao Wix.');
+    const saved=await wixJson('/data/v2/items','POST',{dataCollectionId:'PetsInscritos',dataItem:{data:{nomeTutor:tutor,whatsapp:telefone,nomePet:pet,especie,fotoPet:uploaded.file.url,autorizacaoFoto:true,aceiteRegras:true,status:'Aguardando aprovação',dataInscricao:{$date:new Date().toISOString()}}}});
+    const id=saved.dataItem?.id;
+    if (!id) throw new Error('Wix não confirmou o cadastro.');
+    return res.status(201).json({success:true,registrationId:id});
+  } catch(e) { console.error('Falha no cadastro:',e); return res.status(502).json({success:false,message:'Não foi possível concluir a inscrição. Tente novamente.'}); }
+});
+app.use((err,req,res,next)=>res.status(err.code==='LIMIT_FILE_SIZE'?413:400).json({success:false,message:err.code==='LIMIT_FILE_SIZE'?'Foto maior que 3 MB.':'Arquivo ou formulário inválido.'}));
+app.listen(process.env.PORT||3000,()=>console.log('API de inscrições iniciada'));
