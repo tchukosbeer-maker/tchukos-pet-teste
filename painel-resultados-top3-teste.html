@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive">
+<title>Painel privado • Faroeste de Quatro Patas</title>
+<style>
+:root{color-scheme:dark;--bg:#18120e;--panel:#2a1d16;--edge:#775333;--gold:#f4c779;--text:#f8eddd;--muted:#c7b39b}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#402a1a,var(--bg) 65%);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}
+header{text-align:center;padding:36px 16px 18px}h1{font-family:Georgia,serif;font-size:clamp(26px,4vw,46px);color:var(--gold);margin:8px 0}header p{color:var(--muted)}main{max-width:1100px;margin:auto;padding:0 16px 60px}
+.card{background:var(--panel);border:1px solid var(--edge);border-radius:15px;padding:20px;margin:16px 0;box-shadow:0 6px 24px #0005}
+.login{max-width:530px;margin:20px auto}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}input{flex:1;min-width:180px;padding:13px;border:1px solid var(--edge);border-radius:9px;background:#130f0d;color:white;font-size:16px}
+button{background:var(--gold);color:#23160b;border:0;border-radius:9px;padding:13px 18px;font-size:15px;font-weight:700;cursor:pointer}button:hover{filter:brightness(1.08)}button:disabled{opacity:.6;cursor:wait}
+.status{min-height:24px;color:var(--muted);margin:12px 0}.error{color:#ffb5aa}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}.stat{background:#1b130e;border:1px solid #614529;border-radius:12px;padding:16px}.stat strong{display:block;font-size:30px;color:var(--gold)}.stat span{color:var(--muted)}
+section h2{font-family:Georgia,serif;color:var(--gold);font-size:26px}.pet{display:flex;align-items:center;gap:14px;border-top:1px solid #5a412e;padding:12px 0}.pet:first-of-type{border-top:0}.pet img{width:70px;height:70px;object-fit:cover;border-radius:12px;background:#3c2a20}.pet .details{flex:1;min-width:0}.pet strong{font-size:17px}.pet small{display:block;color:var(--muted);margin-top:3px}.count{font-size:20px;color:var(--gold);font-weight:800;white-space:nowrap}.ranking-actions{margin-top:18px;display:flex;justify-content:flex-end}.ranking-actions button{width:auto}.full-view-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.note{font-size:13px;color:var(--muted)}[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<header><div>🤠 🐾 TCHUKOS BEER 🐾 🤠</div><h1>Painel de Resultados</h1><p>1º Encontro Pet — Faroeste de Quatro Patas • Área administrativa</p></header>
+<main>
+<div class="card login" id="login"><h2>🔒 Acesso privado</h2><p>Informe a senha administrativa configurada no Render.</p><form id="form"><div class="row"><input type="password" id="senha" placeholder="Senha administrativa" autocomplete="off" required><button type="submit" id="entrar">Consultar resultados</button></div></form><p class="note">A senha não é salva no navegador. Não compartilhe este painel ou a senha.</p><p class="status" id="loginStatus" role="status"></p></div>
+<div id="conteudo" hidden><div class="row"><button type="button" id="atualizar">↻ Atualizar resultados</button><button type="button" id="sair">Sair</button></div><p class="status" id="status" role="status"></p><div class="stats" id="stats"></div><div id="rankings"></div><p class="note">Em caso de empate, os pets aparecem empatados na posição; o painel não realiza desempate automático. Votos de teste estão incluídos até a limpeza oficial.</p></div>
+</main>
+<script>
+'use strict';
+const API='https://tchukos-pet-api.onrender.com/api/admin/resultados';
+const categorias=['Pet Mais Simpático','Pet Mais Estiloso','Dupla Mais Criativa'];
+const $=id=>document.getElementById(id);
+let senhaEmMemoria='';
+function el(tag,cls,txt){const n=document.createElement(tag);if(cls)n.className=cls;if(txt!==undefined)n.textContent=String(txt);return n;}
+function aviso(id,msg,erro=false){$(id).textContent=msg;$(id).classList.toggle('error',erro);}
+function desenhar(d){
+ $('stats').replaceChildren();$('rankings').replaceChildren();
+ const stats=[['Votos válidos',d.totalVotos],['Pets aprovados',d.totalPets],...categorias.map(c=>[c,d.contagem?.[c]??0])];
+ if(d.votosIgnorados)stats.push(['Votos não contabilizados',d.votosIgnorados]);
+ for(const [nome,valor] of stats){const box=el('div','stat');box.append(el('strong','',valor),el('span','',nome));$('stats').append(box);}
+ for(const categoria of categorias){const sec=el('section','card');sec.append(el('h2','',categoria));const lista=d.rankings?.[categoria]||[];
+ if(!lista.length){sec.append(el('p','note','Nenhum pet aprovado nesta categoria.'));$('rankings').append(sec);continue;}
+ let anterior=null,posicao=0;const linhas=[];
+ lista.forEach((pet,i)=>{if(pet.votos!==anterior)posicao=i+1;anterior=pet.votos;
+ const row=el('div','pet');const img=el('img');img.alt='Foto de '+pet.nomePet;img.loading='lazy';
+ if(/^https:\/\//i.test(pet.fotoPet))img.src=pet.fotoPet;
+ const details=el('div','details');details.append(el('strong','',`${posicao}º — ${pet.nomePet}`),el('small','',pet.especie));
+ row.append(img,details,el('div','count',`${pet.votos} voto${pet.votos===1?'':'s'}`));linhas.push({row,posicao});
+ });
+ const resumo=el('div');const completo=el('div');
+ for(const item of linhas){if(item.posicao<=3)resumo.append(item.row.cloneNode(true));completo.append(item.row);}
+ sec.append(resumo);
+ if(linhas.some(item=>item.posicao>3)){
+   const actions=el('div','ranking-actions');const botao=el('button','','📋 Ver todos os votos');botao.type='button';
+   const vista=el('div');vista.hidden=true;
+   const cabecalho=el('div','full-view-heading');const titulo=el('h3','',`Classificação completa — ${categoria}`);const voltar=el('button','','← Voltar ao TOP 3');voltar.type='button';
+   cabecalho.append(titulo,voltar);vista.append(cabecalho,completo);
+   botao.addEventListener('click',()=>{resumo.hidden=true;actions.hidden=true;vista.hidden=false;sec.scrollIntoView({behavior:'smooth',block:'start'});});
+   voltar.addEventListener('click',()=>{vista.hidden=true;resumo.hidden=false;actions.hidden=false;sec.scrollIntoView({behavior:'smooth',block:'start'});});
+   actions.append(botao);sec.append(actions,vista);
+ }else{sec.append(el('p','note','Todos os participantes desta categoria estão no TOP 3.'));}
+ $('rankings').append(sec);}
+
+ }
+async function consultar(){
+ $('entrar').disabled=true;$('atualizar').disabled=true;
+ aviso('loginStatus','Consultando o Wix…');aviso('status','Consultando o Wix…');
+ try{
+ const r=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({senha:senhaEmMemoria}),cache:'no-store'});
+ const d=await r.json();if(!r.ok||!d.success)throw new Error(d.message||'Erro ao consultar resultados.');
+ desenhar(d);$('login').hidden=true;$('conteudo').hidden=false;
+ aviso('status','Atualizado em '+new Date(d.geradoEm).toLocaleString('pt-BR')+'.');aviso('loginStatus','');
+ }catch(e){aviso($('conteudo').hidden?'loginStatus':'status',e.message,true);if(e.message.includes('Senha')){senhaEmMemoria='';$('login').hidden=false;$('conteudo').hidden=true;}}
+ finally{$('entrar').disabled=false;$('atualizar').disabled=false;}
+}
+$('form').addEventListener('submit',e=>{e.preventDefault();senhaEmMemoria=$('senha').value;$('senha').value='';consultar();});
+$('atualizar').addEventListener('click',consultar);
+$('sair').addEventListener('click',()=>{senhaEmMemoria='';$('senha').value='';$('conteudo').hidden=true;$('login').hidden=false;aviso('loginStatus','');$('rankings').replaceChildren();});
+</script>
+</body></html>
